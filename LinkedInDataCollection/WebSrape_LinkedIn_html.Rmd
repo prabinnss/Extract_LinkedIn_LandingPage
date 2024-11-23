@@ -1,0 +1,203 @@
+---
+title: "R Codes"
+# date: '`r format(Sys.Date(), "%Y-%B-%d")`'
+output:
+  html_document:
+    code_folding: hide
+    number_sections: yes
+    theme: united
+    toc: yes
+  html_notebook:
+    code_folding: hide
+    number_sections: yes
+    theme: united
+    toc: yes
+  pdf_document:
+    toc: yes
+  word_document:
+    toc: yes
+editor_options:
+  chunk_output_type: console
+---
+
+```{r global_options, include=FALSE}
+library(rmarkdown)
+library(knitr)
+options(encoding="utf-8")
+options(scipen=1, digits=2)
+
+```
+
+# Load commonly used library, others are loaded in each chunk as needed.
+* Don't put the library loading code in chunk with option cache=TRUE, since it may not be executed.
+* Check existence of working directory and create them if don't exist
+```{r loading common libs, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(lubridate)
+library(readr)
+library(readxl)
+library(fixest)
+
+pdd <- getwd()
+
+print(paste("The root folder is",getwd()))
+
+```
+
+
+# Prepare LinkedIn link/url file
+* Use Python code to download
+```{r eval=FALSE, include=FALSE}
+l_list <- readxl::read_xlsx(file.path(pdd,"input/Virginia CPA Database 10_28_2024.xlsx"),sheet = "List") %>% 
+  rename_with(~str_remove_all(.,"\\s+"),everything()) %>% 
+  rename_with(str_to_lower) %>% 
+  ungroup()
+
+l_list_done <- list.files(file.path(pdd,"linkedInprofiles")) %>% as_tibble() %>% 
+  mutate(value=str_remove_all(value,".*_")) %>% 
+  mutate(value=str_remove_all(value,".html")) %>% 
+  distinct() %>% 
+  rename(license_no=value) %>% 
+  mutate(license_no=as.integer(license_no)) %>% 
+  ungroup()
+
+linkedIn="https://www.linkedin.com/in/"
+dd_a1 <- l_list %>% 
+  select(license_no,linkedinwebsite) %>% 
+  mutate(linkedinwebsite=str_remove_all(linkedinwebsite,linkedIn)) %>% 
+  separate(linkedinwebsite,into = c("username",NA),sep = "/|\\?") %>% 
+  drop_na() %>% 
+  ungroup()
+  
+dd_a2 <- dd_a1 %>% 
+  mutate(linkedinwebsite=paste0(linkedIn,username)) %>% 
+  anti_join(l_list_done) %>% 
+  ungroup()
+
+dd_a2 %>% write_csv(file.path(pdd,"urls_clean_to_be_done.csv"))
+
+```
+
+## Parse out call data from transcript pages.
+* Assume call transcripts are downloaded from stops above and saved to local drive as html files.
+```{r message=FALSE, warning=FALSE}
+library(rvest)
+library(xml2)
+ddir <- file.path(pdd,"linkedInprofiles")
+kk_files <- list.files(path =ddir, pattern=".+html$",recursive=FALSE,all.files=FALSE,full.names=TRUE) %>%
+  as_tibble() %>% 
+  ungroup()
+
+ct<<-0
+page_content <- kk_files %>% 
+  # slice_head(n = 5) %>% # Parse the first 5 files. Comment this line to parse all the files.
+  mutate(rs=map(value, function(x){
+    ct<<-ct+1
+    print(paste("Parsing page",ct,":",x))
+    
+    dd_i1=read_html(x) #%>% html_element(".tailwind-article-body") 
+    
+    # Parse information from each row
+    # only find the p and h2 direct decedents
+    dd_fullname <- dd_i1 %>% html_elements("a>h1[class*='RIbnCAsTbWzbdDScQkPGXRrQHSaITKZWQhh']") %>% html_text2()
+    dd_curtitle <- dd_i1 %>% html_elements("div[class='text-body-medium break-words']") %>% html_text2()
+    dd_curremployer <- dd_i1 %>% html_elements("ul[class='hNDqkOikRDuBnmMRQBsDppnmDpFtRoVtlI']>li:first-child") %>% html_text2()
+    dd_currschool <- dd_i1 %>% html_elements("ul[class='hNDqkOikRDuBnmMRQBsDppnmDpFtRoVtlI']>li:last-child") %>% html_text2()
+    dd_location <- dd_i1 %>% html_elements("div>span[class='text-body-small inline t-black--light break-words']") %>% html_text2()
+    dd_followers <- dd_i1 %>% html_elements("ul[class='MWaduJUIKMfhoQkrCRhYTGnTIpgfQk dZtxzUycPMMyfWWwoWSxLMWZifggjaCUWyn']>li[class='text-body-small t-black--light inline-block']") %>% html_text2()
+    dd_connections <- dd_i1 %>% html_elements("ul[class='MWaduJUIKMfhoQkrCRhYTGnTIpgfQk dZtxzUycPMMyfWWwoWSxLMWZifggjaCUWyn']>li[class='text-body-small']") %>% html_text2()
+    dd_about <- dd_i1 %>% html_elements("section>div[class='display-flex ph5 pv3'] span[class='visually-hidden']") %>% html_text2()
+    # dd_section_exp <- dd_i1 %>% html_elements("section:has(>div[id='experience'])") 
+    # dd_section_exp <- dd_i1 %>% html_elements(xpath = "//section[div[@id='experience'") 
+    dd_section_exp_list <- dd_i1 %>% html_elements("#experience + div+div>ul[class^='EFLaOlCrViAfIXmeNoOeVWbBsMuTBSwkXZDPU']>li")
+    dd_section_exp <- dd_section_exp_list %>% map_df(function(y) {
+      # y=dd_section_exp_list[1]
+      y0=y %>% html_elements("div:nth_child(2)>div>div[class*='display-flex flex-column full-width']")
+      f_title=y0 %>% html_elements("div span[class='visually-hidden']") %>% html_text2()
+      f_company_n_type=y0 %>% html_elements("span[class='t-14 t-normal'] span[class='visually-hidden']") %>% html_text2()
+      f_year_duration_location=y0 %>% html_elements("span[class$='t-black--light'] span[class='visually-hidden']") %>% html_text2() 
+      
+      tibble(f_title,f_company_n_type,f_year_duration_location)
+      
+    })
+    
+    dd_section_edu_list <- dd_i1 %>% html_elements("#education + div+div>ul[class^='EFLaOlCrViAfIXmeNoOeVWbBsMuTBSwkXZDPU']>li")
+    dd_section_edu <- dd_section_edu_list %>% map_df(function(y) {
+      # y=dd_section_edu_list[1]
+      y0=y %>% html_elements("div:nth_child(2)>div[class*='display-flex flex-row justify-space-between']")
+      f_school=y0 %>% html_elements("div[class='display-flex flex-wrap align-items-center full-height'] span[class='visually-hidden']") %>% html_text2()
+      f_degree=y0 %>% html_elements("span[class='t-14 t-normal'] span[class='visually-hidden']") %>% html_text2()
+      f_year_duration=y0 %>% html_elements("span[class$='t-black--light'] span[class='visually-hidden']") %>% html_text2()
+      
+      tibble(f_school,f_degree,f_year_duration)
+    })
+    
+    
+    dd_t1 <- tibble(fullname=ifelse(length(dd_fullname)>0,dd_fullname,NA),
+                    curtitle=ifelse(length(dd_curtitle)>0,dd_curtitle,NA),
+                    curremployer=ifelse(length(dd_curremployer)>0,dd_curremployer,NA),
+                    currschool=ifelse(length(dd_currschool)>0,dd_currschool,NA),
+                    location=ifelse(length(dd_location)>0,dd_location,NA),
+                    followers=ifelse(length(dd_followers)>0,dd_followers,NA),
+                    connections=ifelse(length(dd_connections)>0,dd_connections,NA),
+                    experiences=list(dd_section_exp),
+                    educations=list(dd_section_edu),
+                    about=ifelse(length(dd_about)>0,dd_about,NA)) %>% 
+      mutate(across(where(is.character),str_squish))
+  }
+  ))
+
+
+page_content_raw <- page_content %>% unnest(rs) %>% 
+  rename(value=value) %>% 
+  mutate(value=str_remove_all(value,".*/")) %>% 
+  separate(value,into = c(NA,NA,"rowid","license"),sep = "_") %>% 
+  mutate(rowid=as.integer(rowid)) %>% 
+  mutate(license=str_remove(license,".html")) %>% 
+  arrange(rowid) %>% 
+  ungroup()
+
+page_content_raw %>% write_rds(file.path(pdd,"output/CAP_data_raw.rds"))
+print("A sample of raw page content are shown below.")
+page_content_raw
+
+```
+
+# Part 3: Clean and organize the data
+```{r message=FALSE, warning=FALSE}
+dd_a1  <- read_rds(file.path(pdd,"CAP_data_raw.rds"))
+
+dd_basics <- dd_a1 %>% select(-c(experiences,educations)) %>% 
+  mutate(across(where(is.character),str_squish)) %>% 
+  ungroup()
+
+# dd_basics %>% clipr::write_clip()
+
+dd_b1 <- dd_a1 %>% select(rowid,license,fullname,experiences) %>% unnest(experiences) 
+dd_exp <- dd_b1 %>% 
+  group_by(rowid,license,fullname,f_title,f_company_n_type) %>% 
+  summarise(f_year_duration_location=paste(f_year_duration_location,collapse = "|")) %>% 
+  separate(f_company_n_type,into = c("company","type"),sep = "\\·") %>% 
+  separate(f_year_duration_location,into = c("yd","location"),sep = "\\|") %>% 
+  separate(yd,into = c("year_range","duration"),sep = "\\·") %>% 
+  mutate(across(where(is.character),str_squish)) %>% 
+  ungroup()
+# dd_exp %>% clipr::write_clip()
+
+dd_c1 <- dd_a1 %>% select(rowid,license,fullname,educations) %>% unnest(educations) 
+dd_edu <- dd_c1 %>% 
+  separate(f_year_duration,into = c("ystart","yend"),sep = "\\-") %>% 
+  mutate(across(where(is.character),str_squish)) %>% 
+  ungroup()
+# dd_edu %>% clipr::write_clip()
+
+```
+
+
+# Part 4: Calculate additional metrics such as total years of experices and educations.
+* Create variable professional experience
+```{r message=FALSE, warning=FALSE}
+# to be added.
+
+```
+
